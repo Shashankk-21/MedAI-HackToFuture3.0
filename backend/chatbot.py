@@ -28,6 +28,11 @@ SAFE_CHAT_FALLBACK_MESSAGE = (
 	"for personalized medical guidance."
 )
 
+EXPLANATION_WORD_LIMIT = 170
+CHAT_WORD_LIMIT = 170
+HIGH_CONFIDENCE_THRESHOLD = 0.65
+MODERATE_CONFIDENCE_THRESHOLD = 0.40
+
 MODEL = None
 USES_NATIVE_SYSTEM_INSTRUCTION = False
 if API_KEY:
@@ -114,124 +119,272 @@ def _generate_text(prompt):
 	try:
 		response = MODEL.generate_content(
 			prompt,
-			generation_config={"max_output_tokens": 220},
+			generation_config={
+				"max_output_tokens": 260,
+				"temperature": 0.45,
+				"top_p": 0.9,
+			},
 		)
 		return _extract_response_text(response)
 	except Exception:
 		return ""
 
 
-def _build_local_explanation(top_findings, limitations_block):
-	term_meanings = {
-		"Pneumonia": (
-			"Pneumonia means the image may show a pattern that can be seen with infection or inflammation in the lungs. "
-			"It is a screening signal, not a final diagnosis."
-		),
-		"Lung Opacity": (
-			"Lung opacity means part of the image looks hazier or denser than expected. "
-			"That can happen for several reasons, including infection, fluid, or overlapping structures."
-		),
-		"Effusion": (
-			"Effusion refers to possible fluid around the lungs. "
-			"It is a descriptive imaging finding that needs clinical review."
-		),
-		"Consolidation": (
-			"Consolidation means an area of the lung looks more solid than usual. "
-			"This can sometimes be seen with infection or inflammation, but it is not a diagnosis by itself."
-		),
-		"Atelectasis": (
-			"Atelectasis means a portion of the lung may be partially collapsed or not fully expanded. "
-			"It can occur for different reasons and must be interpreted in context."
-		),
-		"Cardiomegaly": (
-			"Cardiomegaly means the heart appears larger than expected on the image. "
-			"This is a screening observation and does not confirm heart disease on its own."
-		),
-		"Edema": (
-			"Edema refers to possible fluid-related patterns in the lungs. "
-			"Doctors use this together with symptoms and other findings."
-		),
-	}
+def _normalize_predictions_payload(predictions):
+	scores = {}
+	limitations = {}
+	model_info = {}
+	interpretation = {}
 
-	if top_findings:
-		lead_names = ", ".join([f"{name} ({score:.4f})" for name, score in top_findings])
-		lead = (
-			f"The strongest screening signals are {lead_names}. These are the image patterns the model noticed most strongly, "
-			"and they should be treated as clues for review rather than a diagnosis."
+	if not isinstance(predictions, dict):
+		return scores, limitations, model_info, interpretation
+
+	if isinstance(predictions.get("scores"), dict):
+		for disease, value in predictions["scores"].items():
+			if isinstance(value, bool):
+				continue
+			if isinstance(value, (int, float)):
+				scores[disease] = float(value)
+
+	if isinstance(predictions.get("limitations"), dict):
+		limitations = predictions["limitations"]
+
+	if isinstance(predictions.get("model_info"), dict):
+		model_info = predictions["model_info"]
+
+	if isinstance(predictions.get("interpretation"), dict):
+		interpretation = predictions["interpretation"]
+
+	# Backward-compatible path for older callers that pass plain disease-score maps.
+	if not scores:
+		for disease, value in predictions.items():
+			if isinstance(value, bool):
+				continue
+			if isinstance(value, (int, float)):
+				scores[disease] = float(value)
+			else:
+				limitations[disease] = value
+
+	return scores, limitations, model_info, interpretation
+
+
+def _confidence_band(score):
+	if score >= HIGH_CONFIDENCE_THRESHOLD:
+		return "strong"
+	if score >= MODERATE_CONFIDENCE_THRESHOLD:
+		return "moderate"
+	return "low"
+
+
+def _human_join(items):
+	if not items:
+		return ""
+	if len(items) == 1:
+		return items[0]
+	if len(items) == 2:
+		return f"{items[0]} and {items[1]}"
+	return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
+def _score_pct(score):
+	return f"{score * 100:.1f}%"
+
+
+def _derive_probability_groups(scores, interpretation):
+	likely = []
+	possible = []
+
+	if isinstance(interpretation, dict):
+		likely_raw = interpretation.get("likely_findings")
+		possible_raw = interpretation.get("possible_findings")
+		if isinstance(likely_raw, list):
+			likely = [item for item in likely_raw if isinstance(item, str)]
+		if isinstance(possible_raw, list):
+			possible = [item for item in possible_raw if isinstance(item, str)]
+
+	if likely or possible:
+		return likely, possible
+
+	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+	for name, score in ranked:
+		if score >= HIGH_CONFIDENCE_THRESHOLD:
+			likely.append(name)
+		elif score >= MODERATE_CONFIDENCE_THRESHOLD:
+			possible.append(name)
+	return likely, possible
+
+
+def _build_profile_summary(scores):
+	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+	if not ranked:
+		return "No clear signal profile available."
+
+	top_name, top_score = ranked[0]
+	second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+	gap = top_score - second_score
+
+	if top_score >= HIGH_CONFIDENCE_THRESHOLD and gap >= 0.15:
+		return f"Dominant pattern: {top_name} ({_score_pct(top_score)}), clearly above the next finding."
+	if top_score >= HIGH_CONFIDENCE_THRESHOLD:
+		return f"Mixed high-signal pattern with leading finding {top_name} ({_score_pct(top_score)})."
+	if top_score >= MODERATE_CONFIDENCE_THRESHOLD:
+		return f"Moderate signal pattern, led by {top_name} ({_score_pct(top_score)})."
+	return "No strong disease-specific signal is present in this screening profile."
+
+
+def _build_explanation_prompt(scores, limitations, model_info, interpretation):
+	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+	top_findings = ranked[:4]
+	pneumonia_score = scores.get("Pneumonia")
+	likely, possible = _derive_probability_groups(scores, interpretation)
+	profile_summary = _build_profile_summary(scores)
+
+	findings_lines = [
+		f"- {name}: {score:.4f} ({_confidence_band(score)} signal)"
+		for name, score in top_findings
+	]
+	if pneumonia_score is not None and "Pneumonia" not in {name for name, _ in top_findings}:
+		findings_lines.append(
+			f"- Pneumonia: {pneumonia_score:.4f} ({_confidence_band(pneumonia_score)} signal)"
+		)
+
+	limitations_block = "- None provided"
+	if limitations:
+		limitations_block = "\n".join([f"- {k}: {v}" for k, v in limitations.items()])
+
+	model_block = "- Not provided"
+	if model_info:
+		model_block = "\n".join([f"- {k}: {v}" for k, v in model_info.items()])
+
+	probability_block = "- likely_findings: None\n- possible_findings: None"
+	if likely or possible:
+		probability_block = (
+			f"- likely_findings: {likely or ['None']}\n"
+			f"- possible_findings: {possible or ['None']}"
+		)
+
+	return _build_guardrailed_prompt(
+		"You are speaking directly to a patient. Write a natural, calm explanation in 2 short paragraphs "
+		"plus one brief next-step sentence. Use plain language and avoid sounding like raw model output. "
+		"Do not list every number. Mention only the most relevant findings and what they might mean. "
+		"Use probability language such as 'most likely', 'possible', or 'less likely' based on confidence bands. "
+		"If pneumonia is moderate or strong, acknowledge it clearly but avoid definitive diagnosis. "
+		"If pneumonia is low, say that clearly too. Mention uncertainty and model limitations naturally. "
+		"Keep the response under 170 words and end with: Please consult a licensed physician.\n\n"
+		f"Signal profile summary:\n- {profile_summary}\n\n"
+		f"Probability grouping:\n{probability_block}\n\n"
+		f"Key screening findings:\n{'\n'.join(findings_lines)}\n\n"
+		f"Limitations/context:\n{limitations_block}\n\n"
+		f"Model metadata:\n{model_block}"
+	)
+
+
+def _build_local_explanation(scores, limitations, interpretation):
+	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+	top_findings = ranked[:4]
+	top_name = top_findings[0][0] if top_findings else ""
+	pneumonia_score = scores.get("Pneumonia", 0.0)
+	likely, possible = _derive_probability_groups(scores, interpretation)
+	profile_summary = _build_profile_summary(scores)
+
+	intro = "Thanks for sharing your X-ray screening result."
+	if pneumonia_score >= HIGH_CONFIDENCE_THRESHOLD and "Pneumonia" in likely:
+		pneumonia_line = (
+			"Based on these confidence scores, pneumonia is among the more probable findings. "
+			"This can match patterns seen with lung infection or inflammation. "
+			"This still needs medical confirmation with symptoms, examination, and possibly additional tests."
+		)
+	elif pneumonia_score >= MODERATE_CONFIDENCE_THRESHOLD:
+		pneumonia_line = (
+			"There is a possible pneumonia-related signal. It may fit patterns seen with infection, "
+			"but the result is not a diagnosis by itself."
 		)
 	else:
-		lead = (
-			"The model did not identify a single dominant screening signal. That can still be useful, because it suggests the image does not strongly match one specific pattern."
+		pneumonia_line = (
+			"The pneumonia-related signal is low on this screening result, so this scan alone does not strongly point to pneumonia."
 		)
 
-	details = []
-	for name, score in top_findings:
-		meaning = term_meanings.get(
-			name,
-			"This is a screening label describing an image pattern and should be reviewed by a clinician in context."
-		)
-		details.append(f"{name} ({score:.4f}): {meaning}")
+	most_probable = [
+		name for name in likely if name not in {"Pneumonia", top_name}
+	]
+	if not most_probable:
+		most_probable = [
+			name for name, score in top_findings
+			if name not in {"Pneumonia", top_name} and score >= MODERATE_CONFIDENCE_THRESHOLD
+		]
 
-	limitations_text = ""
-	if limitations_block and "Tuberculosis" in limitations_block:
-		limitations_text = (
-			"The Tuberculosis note is a separate limitation from the main screening scores, which means a specific TB assay is needed to evaluate that question."
+	possible_only = [
+		name
+		for name in possible
+		if name not in {"Pneumonia", top_name} and name not in most_probable
+	][:2]
+
+	findings_line = ""
+	if most_probable:
+		joined = _human_join(most_probable[:2])
+		findings_line = (
+			f"The most probable additional findings are {joined}, based on stronger confidence signals."
+		)
+	elif possible_only:
+		joined = _human_join(possible_only)
+		findings_line = (
+			f"Possible additional findings include {joined}, but these remain uncertain and need clinical correlation."
 		)
 
-	parts = [lead] + details
-	if limitations_text:
-		parts.append(limitations_text)
+	profile_line = profile_summary
+
+	limitations_line = ""
+	if isinstance(limitations, dict) and "Tuberculosis" in limitations:
+		limitations_line = (
+			"This model also cannot rule in or rule out tuberculosis from this scan alone, and a dedicated TB test is needed for that."
+		)
+
+	parts = [intro, profile_line, pneumonia_line]
+	if findings_line:
+		parts.append(findings_line)
+	if limitations_line:
+		parts.append(limitations_line)
 	parts.append("Please consult a licensed physician.")
-	return " ".join(parts)
+	return _trim_to_word_limit(" ".join(parts), EXPLANATION_WORD_LIMIT)
+
+
+def _looks_like_old_template(text):
+	if not isinstance(text, str):
+		return True
+	lower_text = text.lower()
+	old_markers = [
+		"the strongest screening signals are",
+		"these are the image patterns the model noticed most strongly",
+		"the tuberculosis note is a separate limitation",
+	]
+	if any(marker in lower_text for marker in old_markers):
+		return True
+
+	# Reject list-like rigid phrasing that tends to feel repetitive.
+	if lower_text.count(":") >= 5:
+		return True
+	return False
 
 
 def explain_diagnosis(predictions: dict) -> str:
 	try:
-		if MODEL is None:
-			return SAFE_FALLBACK_MESSAGE
-
 		if not isinstance(predictions, dict) or not predictions:
 			return SAFE_FALLBACK_MESSAGE
 
-		numeric_findings = []
-		non_numeric_notes = []
-
-		for disease, value in predictions.items():
-			if isinstance(value, bool):
-				non_numeric_notes.append(f"- {disease}: {value}")
-			elif isinstance(value, (int, float)):
-				numeric_findings.append((disease, float(value)))
-			else:
-				non_numeric_notes.append(f"- {disease}: {value}")
-
-		if not numeric_findings:
+		scores, limitations, model_info, interpretation = _normalize_predictions_payload(predictions)
+		if not scores:
 			return SAFE_FALLBACK_MESSAGE
 
-		top_findings = sorted(numeric_findings, key=lambda item: item[1], reverse=True)[:3]
-
-		findings_block = "\n".join(
-			[f"- {name}: {score:.4f}" for name, score in top_findings]
-		)
-		limitations_block = (
-			"\n".join(non_numeric_notes)
-			if non_numeric_notes
-			else "- None provided"
-		)
-
-		prompt = _build_guardrailed_prompt(
-			"Explain the following chest X-ray screening findings in simple language "
-			"for a patient in under 150 words. Be supportive and non-alarming. Do not "
-			"provide a definitive medical diagnosis. End by advising the patient to consult a "
-			"licensed physician.\n\n"
-			f"Top findings (numeric scores):\n{findings_block}\n\n"
-			f"Additional limitations/context:\n{limitations_block}"
-		)
-
-		text = _generate_text(prompt)
+		text = ""
+		if MODEL is not None:
+			prompt = _build_explanation_prompt(scores, limitations, model_info, interpretation)
+			text = _generate_text(prompt)
 		if text:
-			text = _ensure_physician_consult_closing(text, 150)
-		else:
-			text = _build_local_explanation(top_findings, limitations_block)
+			text = _ensure_physician_consult_closing(text, EXPLANATION_WORD_LIMIT)
+			if _looks_like_old_template(text):
+				text = ""
+		if not text:
+			text = _build_local_explanation(scores, limitations, interpretation)
 		return text if text else SAFE_FALLBACK_MESSAGE
 	except Exception:
 		return SAFE_FALLBACK_MESSAGE
@@ -250,17 +403,20 @@ def chat(message: str, context: str) -> str:
 
 		prompt = _build_guardrailed_prompt(
 			"Answer the patient's question using the prior chest X-ray screening context below. "
-			"Stay educational, simple, and non-alarming. Do not provide a definitive "
-			"medical diagnosis. If uncertainty exists, clearly recommend consulting a "
-			"licensed physician.\n\n"
+			"Stay educational, simple, and non-alarming. Sound human and conversational, not robotic. "
+			"If the patient asks basic medical questions, provide general educational guidance in plain language. "
+			"Do not prescribe treatment or claim certainty from an X-ray score alone. "
+			"Do not provide a definitive medical diagnosis. Use short, clear sentences. If uncertainty exists, "
+			"recommend consulting a licensed physician. Keep the answer under 170 words and end with: "
+			"Please consult a licensed physician.\n\n"
 			f"Previous X-ray context:\n{clean_context or 'No prior context provided.'}\n\n"
 			f"Patient question:\n{clean_message}"
 		)
 
 		text = _generate_text(prompt)
 		if text:
-			text = _ensure_physician_consult_closing(text, 150)
-		return text if text else SAFE_FALLBACK_MESSAGE
+			text = _ensure_physician_consult_closing(text, CHAT_WORD_LIMIT)
+		return text if text else SAFE_CHAT_FALLBACK_MESSAGE
 	except Exception as e:
 		print(f"GEMINI ERROR: {e}")
-		return SAFE_FALLBACK_MESSAGE
+		return SAFE_CHAT_FALLBACK_MESSAGE

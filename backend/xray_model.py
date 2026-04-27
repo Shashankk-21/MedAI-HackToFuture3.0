@@ -25,6 +25,9 @@ REQUESTED_DISEASES = [
 	"Edema",
 ]
 
+HIGH_CONFIDENCE_THRESHOLD = 0.65
+MODERATE_CONFIDENCE_THRESHOLD = 0.40
+
 XRAY_PREPROCESS = transforms.Compose(
 	[xrv.datasets.XRayCenterCrop(), xrv.datasets.XRayResizer(224)]
 )
@@ -71,6 +74,44 @@ def _run_model(model, tensor):
 	return dict(zip(model.pathologies, output_array))
 
 
+def _confidence_band(score):
+	if score >= HIGH_CONFIDENCE_THRESHOLD:
+		return "strong"
+	if score >= MODERATE_CONFIDENCE_THRESHOLD:
+		return "moderate"
+	return "low"
+
+
+def _build_interpretation(scores):
+	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+	top_findings = [
+		{"name": name, "score": round(float(score), 4), "confidence": _confidence_band(score)}
+		for name, score in ranked[:4]
+	]
+
+	likely_findings = [
+		name for name, score in ranked if score >= HIGH_CONFIDENCE_THRESHOLD
+	]
+	possible_findings = [
+		name
+		for name, score in ranked
+		if MODERATE_CONFIDENCE_THRESHOLD <= score < HIGH_CONFIDENCE_THRESHOLD
+	]
+
+	pneumonia_score = round(float(scores.get("Pneumonia", 0.0)), 4)
+	pneumonia_signal = _confidence_band(pneumonia_score)
+
+	return {
+		"top_findings": top_findings,
+		"likely_findings": likely_findings,
+		"possible_findings": possible_findings,
+		"pneumonia": {
+			"score": pneumonia_score,
+			"signal": pneumonia_signal,
+		},
+	}
+
+
 def predict(image_path, use_ensemble=False):
 	tensor = _preprocess_image(image_path)
 
@@ -104,4 +145,5 @@ def predict(image_path, use_ensemble=False):
 			"ensemble_enabled": bool(use_ensemble),
 			"models_used": used_models,
 		},
+		"interpretation": _build_interpretation(scores),
 	}

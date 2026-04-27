@@ -62,21 +62,13 @@ async def analyze(file: UploadFile = File(...)):
 
 	try:
 		predictions = predict(filepath)
-
-		explanation_input = {}
-		if isinstance(predictions, dict):
-			if isinstance(predictions.get("scores"), dict):
-				explanation_input.update(predictions["scores"])
-			if isinstance(predictions.get("limitations"), dict):
-				explanation_input.update(predictions["limitations"])
-
-		if not explanation_input and isinstance(predictions, dict):
-			explanation_input = predictions
-
-		explanation = explain_diagnosis({**predictions.get("scores", {}), **predictions.get("limitations", {})})
+		explanation = explain_diagnosis(predictions)
 		return {"predictions": predictions, "explanation": explanation}
 	except Exception as exc:
 		raise HTTPException(status_code=500, detail="Failed to analyze image") from exc
+	finally:
+		if os.path.exists(filepath):
+			os.remove(filepath)
 
 
 @app.post("/chat")
