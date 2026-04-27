@@ -1,0 +1,6 @@
+{
+  "name": "Zenith",
+  "description": "Multimodal Diagnosis & Patient Chat Assistant. Analyzes medical images (X-rays/CT scans) to detect diseases and provides patient-friendly explanations through a Gemini-powered chatbot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
