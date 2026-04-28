@@ -8,6 +8,8 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import numpy as np
+from PIL import Image
 
 from chatbot import chat, explain_diagnosis, generate_chat_init
 from xray_model import predict
@@ -123,6 +125,35 @@ async def analyze(file: UploadFile = File(...)):
         ) from exc
     finally:
         await file.close()
+
+    # Validate image before processing
+    try:
+        img = Image.open(filepath)
+        width, height = img.size
+        
+        # Check image dimensions
+        if width < 100 or height < 100:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid image", "message": "Please upload a valid chest X-ray image. Natural photos, screenshots, or non-medical images cannot be analyzed."}
+            )
+        
+        # Convert to grayscale and compute statistics
+        gray_img = img.convert("L")
+        img_array = np.array(gray_img, dtype=np.float32)
+        mean_pixel = np.mean(img_array)
+        std_pixel = np.std(img_array)
+        
+        # Check mean brightness and uniformity
+        if mean_pixel > 180 or std_pixel < 20:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid image", "message": "Please upload a valid chest X-ray image. Natural photos, screenshots, or non-medical images cannot be analyzed."}
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail="Failed to validate image"
+        ) from exc
 
     try:
         predictions = predict(filepath)
