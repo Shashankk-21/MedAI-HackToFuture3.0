@@ -50,10 +50,13 @@ function ChatScreen({ explanation, onBack }) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     
-    // Animate newest messages
+    // Animate newest messages with a pop effect
     const bubbles = document.querySelectorAll('.message-bubble:not(.animated)')
     if (bubbles.length > 0) {
-      gsap.fromTo(bubbles, { opacity: 0, y: 10, scale: 0.95 }, { opacity: 1, y: 0, scale: 1, duration: 0.3, stagger: 0.1, ease: 'back.out(1.2)' })
+      gsap.fromTo(bubbles, 
+        { opacity: 0, y: 20, scale: 0.4 }, 
+        { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.1, ease: 'back.out(1.7)' }
+      )
       bubbles.forEach(b => b.classList.add('animated'))
     }
   }, [messages, isLoading])
