@@ -1,15 +1,101 @@
+import cv2
+from pathlib import Path
 import numpy as np
-import skimage.io
 import torch
 import torchxrayvision as xrv
+from PIL import Image
 import torchvision.transforms as transforms
 
 
-PRIMARY_MODEL = xrv.models.DenseNet(weights="densenet121-res224-all")
-PRIMARY_MODEL.eval()
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-NIH_MODEL = None
-CHEX_MODEL = None
+ENSEMBLE_MODEL_NAMES = [
+	"densenet121-res224-all",
+	"densenet121-res224-nih",
+	"densenet121-res224-chex",
+]
+
+ENSEMBLE_SPECS = [
+	{
+		"name": "densenet121-res224-all",
+		"weights_key": "densenet121-res224-all",
+		"weight_file": "densenet121-res224-all.pth",
+	},
+	{
+		"name": "densenet121-res224-nih",
+		"weights_key": "densenet121-res224-nih",
+		"weight_file": "densenet121-res224-nih.pth",
+	},
+	{
+		"name": "densenet121-res224-chex",
+		"weights_key": "densenet121-res224-chex",
+		"weight_file": "densenet121-res224-chex.pth",
+	},
+]
+
+
+def _resolve_weight_path(filename, weights_key):
+	base_dir = Path(__file__).resolve().parent
+	cache_dir = Path.home() / ".torchxrayvision" / "models_data"
+	official_filename = Path(xrv.models.model_urls[weights_key]["weights_url"]).name
+	candidates = [
+		base_dir / filename,
+		base_dir / "weights" / filename,
+		cache_dir / filename,
+		cache_dir / official_filename,
+	]
+
+	stem = Path(filename).stem
+	for folder in [base_dir, base_dir / "weights", cache_dir]:
+		for ext in (".pth", ".pt"):
+			candidates.append(folder / f"{stem}{ext}")
+
+	for candidate in candidates:
+		if candidate.exists():
+			return candidate
+
+	raise FileNotFoundError(
+		f"Required ensemble weight file not found for {filename}. "
+		f"Looked in: {', '.join(str(path) for path in candidates)}"
+	)
+
+
+def _extract_state_dict(loaded_weights):
+	if hasattr(loaded_weights, "state_dict"):
+		return loaded_weights.state_dict()
+	if isinstance(loaded_weights, dict):
+		for key in ("state_dict", "model_state_dict", "model"):
+			if key in loaded_weights and isinstance(loaded_weights[key], dict):
+				return loaded_weights[key]
+		return loaded_weights
+	raise ValueError("Unsupported weight file format for DenseNet121 ensemble")
+
+
+def _build_ensemble_models():
+	models = {}
+	for spec in ENSEMBLE_SPECS:
+		labels = xrv.models.model_urls[spec["weights_key"]]["labels"]
+		model = xrv.models.DenseNet(weights=None, num_classes=len(labels))
+		model.targets = labels
+		model.pathologies = labels
+		weight_path = _resolve_weight_path(spec["weight_file"], spec["weights_key"])
+		loaded_weights = torch.load(weight_path, map_location="cpu", weights_only=False)
+		state_dict = _extract_state_dict(loaded_weights)
+		model.load_state_dict(state_dict, strict=False)
+		model = model.to(DEVICE)
+		model.eval()
+		models[spec["name"]] = model
+	return models
+
+
+ENSEMBLE_MODELS = None
+
+
+def _get_ensemble_models():
+	global ENSEMBLE_MODELS
+	if ENSEMBLE_MODELS is None:
+		ENSEMBLE_MODELS = _build_ensemble_models()
+	return ENSEMBLE_MODELS
 
 TB_LIMITATION_MESSAGE = (
 	"Not detected by primary model scan (Requires specific TB assay)"
@@ -33,23 +119,14 @@ XRAY_PREPROCESS = transforms.Compose(
 )
 
 
-def _get_optional_ensemble_models():
-	global NIH_MODEL
-	global CHEX_MODEL
-
-	if NIH_MODEL is None:
-		NIH_MODEL = xrv.models.DenseNet(weights="densenet121-res224-nih")
-		NIH_MODEL.eval()
-
-	if CHEX_MODEL is None:
-		CHEX_MODEL = xrv.models.DenseNet(weights="densenet121-res224-chex")
-		CHEX_MODEL.eval()
-
-	return [NIH_MODEL, CHEX_MODEL]
-
-
 def _preprocess_image(image_path):
-	img = skimage.io.imread(image_path)
+	img = Image.open(image_path)
+	img = img.convert("L")
+	img = np.array(img)
+	clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+	img = clahe.apply(img)
+	img = Image.fromarray(img).convert("RGB")
+	img = np.array(img)
 	img = xrv.datasets.normalize(img, 255)
 
 	# Keep the official xrv grayscale conversion pathway.
@@ -68,10 +145,13 @@ def _preprocess_image(image_path):
 
 
 def _run_model(model, tensor):
-	with torch.no_grad():
-		output = model(tensor)
-	output_array = output[0].cpu().numpy()
-	return dict(zip(model.pathologies, output_array))
+	output = model(tensor)
+	output_array = output[0].detach().cpu().numpy()
+	return {
+		pathology: float(score)
+		for pathology, score in zip(model.pathologies, output_array)
+		if pathology
+	}
 
 
 def _confidence_band(score):
@@ -113,27 +193,26 @@ def _build_interpretation(scores):
 
 
 def predict(image_path, use_ensemble=False):
-	tensor = _preprocess_image(image_path)
+	tensor = _preprocess_image(image_path).to(DEVICE)
+	models = _get_ensemble_models()
 
-	model_outputs = [_run_model(PRIMARY_MODEL, tensor)]
-	used_models = ["densenet121-res224-all"]
-
-	if use_ensemble:
-		for extra_model, name in zip(
-			_get_optional_ensemble_models(),
-			["densenet121-res224-nih", "densenet121-res224-chex"],
-		):
-			model_outputs.append(_run_model(extra_model, tensor))
-			used_models.append(name)
+	with torch.no_grad():
+		predictions = [
+			_run_model(models[model_name], tensor)
+			for model_name in ENSEMBLE_MODEL_NAMES
+		]
 
 	scores = {}
 	for disease in REQUESTED_DISEASES:
-		available_scores = [
-			output[disease] for output in model_outputs if disease in output
-		]
-		if not available_scores:
+		# Collect raw logits from each model for this pathology (match by name)
+		available_logits = [prediction[disease] for prediction in predictions if disease in prediction]
+		if not available_logits:
 			raise KeyError(f"Required pathology not found in model output: {disease}")
-		scores[disease] = round(float(np.mean(available_scores)), 4)
+		# Average logits first
+		avg_logit = float(np.mean(available_logits))
+		# Apply sigmoid once to the averaged logit to get probability
+		prob = float(torch.sigmoid(torch.tensor(avg_logit)).item())
+		scores[disease] = round(prob, 4)
 
 	return {
 		"scores": scores,
@@ -142,8 +221,8 @@ def predict(image_path, use_ensemble=False):
 		},
 		"model_info": {
 			"primary": "densenet121-res224-all",
-			"ensemble_enabled": bool(use_ensemble),
-			"models_used": used_models,
+			"ensemble_enabled": True,
+			"models_used": ENSEMBLE_MODEL_NAMES,
 		},
 		"interpretation": _build_interpretation(scores),
 	}

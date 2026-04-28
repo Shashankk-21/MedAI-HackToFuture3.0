@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from chatbot import chat, explain_diagnosis
 from xray_model import predict
+import xray_model as xray_model
+import time
+import tracemalloc
 
 
 UPLOAD_DIR = "uploads"
@@ -132,3 +135,53 @@ async def chat_endpoint(request: Request):
         print(f"chat_endpoint_error={exc}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Failed to process chat request") from exc
+
+
+
+@app.get("/health")
+async def health_check():
+    """Health check for the backend: ensemble status, models loaded, CLAHE active"""
+    info = {
+        "ensemble_loaded": False,
+        "models_loaded": [],
+        "weights_present": [],
+        "clahe_active": False,
+        "load_error": None,
+    }
+
+    # Check CLAHE availability
+    try:
+        info["clahe_active"] = hasattr(xray_model, "cv2") and hasattr(xray_model.cv2, "createCLAHE")
+    except Exception:
+        info["clahe_active"] = False
+
+    # Check weight files in backend/weights
+    weights_dir = os.path.join(os.path.dirname(__file__), "weights")
+    try:
+        if os.path.isdir(weights_dir):
+            info["weights_present"] = [f for f in os.listdir(weights_dir) if os.path.isfile(os.path.join(weights_dir, f))]
+        else:
+            info["weights_present"] = []
+    except Exception:
+        info["weights_present"] = []
+
+    # Attempt to lazily load ensemble models and measure time
+    tracemalloc.start()
+    t0 = time.perf_counter()
+    try:
+        models = xray_model._get_ensemble_models()
+        info["ensemble_loaded"] = True
+        info["models_loaded"] = list(models.keys())
+    except Exception as exc:
+        info["ensemble_loaded"] = False
+        info["load_error"] = f"{type(exc).__name__}: {exc}"
+    t1 = time.perf_counter()
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    info["load_seconds"] = round(t1 - t0, 3)
+    info["tracemalloc_current_mb"] = round(current / (1024 * 1024), 2)
+    info["tracemalloc_peak_mb"] = round(peak / (1024 * 1024), 2)
+
+    status = 200 if info["ensemble_loaded"] else 503
+    return JSONResponse(status_code=status, content=info)

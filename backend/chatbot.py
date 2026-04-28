@@ -344,6 +344,37 @@ def explain_diagnosis(predictions: dict) -> str:
     if not isinstance(predictions, dict) or not predictions:
         return SAFE_FALLBACK_MESSAGE
     try:
+        # Additive clinical-mapping logic implemented in backend (non-model)
+        scores = predictions.get("scores", {}) if isinstance(predictions.get("scores", {}), dict) else {}
+        # Ensure synthetic_findings container exists
+        if "synthetic_findings" not in predictions:
+            predictions["synthetic_findings"] = {}
+
+        # Rule: all scores below 0.25 -> explicit normal statement
+        numeric_scores = [float(v) for v in scores.values() if isinstance(v, (int, float))]
+        if numeric_scores and all(v < 0.25 for v in numeric_scores):
+            predictions["synthetic_findings"].pop("pneumonia_pattern", None)
+            explicit = "This scan appears within normal limits with no significant abnormalities detected."
+            return _ensure_physician_consult_closing(explicit, EXPLANATION_WORD_LIMIT)
+
+        # Rule: Lung Opacity driven synthetic pneumonia pattern
+        lung_opacity_score = float(scores.get("Lung Opacity", 0.0)) if "Lung Opacity" in scores else 0.0
+        effusion_score = float(scores.get("Effusion", 0.0)) if "Effusion" in scores else 0.0
+        preface_lines = []
+        if lung_opacity_score > 0.70:
+            # Add synthetic finding to the predictions JSON
+            predictions["synthetic_findings"]["pneumonia_pattern"] = {
+                "score": round(lung_opacity_score, 4),
+                "signal": "Lung Opacity pattern consistent with infectious process",
+            }
+            preface_lines.append(
+                "The imaging pattern is strongly suggestive of an infectious or inflammatory lung process (for example, pneumonia)."
+            )
+            if effusion_score > 0.30:
+                preface_lines.append(
+                    "The combination of marked lung opacity with pleural effusion is commonly seen in bacterial pneumonia with pleural involvement."
+                )
+        # Build prompt for Gemini but keep backend additions as a preface
         prompt = _build_guardrailed_prompt(
             "Write a calm, plain-language chest X-ray explanation for a patient. "
             "Do not give a definitive diagnosis. Keep it short and end with: "
@@ -351,6 +382,17 @@ def explain_diagnosis(predictions: dict) -> str:
             f"Predictions:\n{predictions}"
         )
         text = _generate_text(prompt)
+
+        # Prepend any deterministic clinical lines derived from backend logic
+        if preface_lines:
+            preface = " ".join(preface_lines)
+            if text:
+                # Ensure we don't repeat physician closing; enforce physician reminder placement
+                wrapped = _ensure_physician_consult_closing(f"{preface} {text}", EXPLANATION_WORD_LIMIT)
+                return wrapped
+            else:
+                return _ensure_physician_consult_closing(preface, EXPLANATION_WORD_LIMIT)
+
         if text:
             return _ensure_physician_consult_closing(text, EXPLANATION_WORD_LIMIT)
         return _build_local_explanation(predictions)
