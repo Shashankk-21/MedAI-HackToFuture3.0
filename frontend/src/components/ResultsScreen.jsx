@@ -168,11 +168,44 @@ function ResultsScreen({ predictions, explanation, imagePreviewUrl, onStartChat,
             </div>
           </div>
           
-          <div className="p-4 dark:bg-slate-900/50 bg-slate-100 border dark:border-slate-800 border-slate-200 rounded-xl">
-            <h4 className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-500 mb-2">Scan Metadata</h4>
-            <div className="grid grid-cols-2 gap-4 text-xs font-mono">
-              <div className="flex justify-between font-bold dark:text-slate-400 text-slate-600"><span className="uppercase text-slate-500">Exposure</span><span>88.4 kVp</span></div>
-              <div className="flex justify-between font-bold dark:text-slate-400 text-slate-600"><span className="uppercase text-slate-500">Orientation</span><span>PA VIEW</span></div>
+          <div className="p-5 rounded-2xl border dark:border-slate-700/50 border-slate-200/70 dark:bg-slate-900/40 bg-white/40 backdrop-blur-xl shadow-[0_10px_30px_rgba(15,23,42,0.15)]">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-[10px] uppercase font-bold tracking-[0.2em] text-slate-500 dark:text-slate-400">Model Info</h4>
+              <span className="text-[10px] font-semibold text-cyan-500 uppercase tracking-widest">Zenith Core</span>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500">Dataset</p>
+                <p className="text-slate-700 dark:text-slate-200 font-semibold">
+                  NIH ChestX-ray14 + CheXpert + MIMIC-CXR (700,000+ images)
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500">Architecture</p>
+                <p className="text-slate-700 dark:text-slate-200 font-semibold">DenseNet121 Ensemble (3 model weights)</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500">Preprocessing</p>
+                <p className="text-slate-700 dark:text-slate-200 font-semibold">CLAHE enhanced, normalized to [-1,1]</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500">Inference</p>
+                <p className="text-slate-700 dark:text-slate-200 font-semibold">On-device CPU inference — no cloud ML dependency</p>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t dark:border-slate-700/50 border-slate-200/70">
+              <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 mb-2">Diseases Covered</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                <span>Pneumonia</span>
+                <span>Lung Opacity</span>
+                <span>Effusion</span>
+                <span>Consolidation</span>
+                <span>Atelectasis</span>
+                <span>Cardiomegaly</span>
+                <span>Edema</span>
+              </div>
             </div>
           </div>
         </div>
