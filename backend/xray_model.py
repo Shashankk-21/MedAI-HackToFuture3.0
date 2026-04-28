@@ -25,8 +25,11 @@ REQUESTED_DISEASES = [
 	"Edema",
 ]
 
-HIGH_CONFIDENCE_THRESHOLD = 0.65
-MODERATE_CONFIDENCE_THRESHOLD = 0.40
+# --- Confidence thresholds ---
+NOISE_THRESHOLD = 0.25
+MINIMAL_SIGNAL_THRESHOLD = 0.45
+POSSIBLE_THRESHOLD = 0.65
+LIKELY_THRESHOLD = 0.80
 
 XRAY_PREPROCESS = transforms.Compose(
 	[xrv.datasets.XRayCenterCrop(), xrv.datasets.XRayResizer(224)]
@@ -74,40 +77,78 @@ def _run_model(model, tensor):
 	return dict(zip(model.pathologies, output_array))
 
 
-def _confidence_band(score):
-	if score >= HIGH_CONFIDENCE_THRESHOLD:
-		return "strong"
-	if score >= MODERATE_CONFIDENCE_THRESHOLD:
-		return "moderate"
-	return "low"
+def _confidence_label(score):
+	"""
+	Returns a human-readable confidence label for a given score.
+	Scores below NOISE_THRESHOLD should already be excluded before calling this.
+	"""
+	if score >= LIKELY_THRESHOLD:
+		return "High confidence finding"
+	if score >= POSSIBLE_THRESHOLD:
+		return "Likely"
+	if score >= MINIMAL_SIGNAL_THRESHOLD:
+		return "Possible"
+	return "Minimal signal"
 
 
-def _build_interpretation(scores):
-	ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+def _overall_assessment(max_score):
+	"""
+	Derives a top-level assessment string from the maximum raw score.
+	"""
+	if max_score >= 0.80:
+		return "Significant findings detected"
+	if max_score >= 0.60:
+		return "Findings warrant attention"
+	if max_score >= 0.40:
+		return "Mild findings, monitoring recommended"
+	return "No significant abnormalities detected"
+
+
+def _build_interpretation(raw_scores):
+	"""
+	Builds the interpretation block from the raw scores dict.
+	"""
+	ranked = sorted(raw_scores.items(), key=lambda item: item[1], reverse=True)
+	filtered_ranked = [
+		(name, score)
+		for name, score in ranked
+		if score >= NOISE_THRESHOLD
+	]
+	max_score = max(raw_scores.values()) if raw_scores else 0.0
+
 	top_findings = [
-		{"name": name, "score": round(float(score), 4), "confidence": _confidence_band(score)}
-		for name, score in ranked[:4]
+		{
+			"name": name,
+			"score": round(float(score), 4),
+			"confidence": _confidence_label(score),
+		}
+		for name, score in filtered_ranked[:4]
 	]
 
 	likely_findings = [
-		name for name, score in ranked if score >= HIGH_CONFIDENCE_THRESHOLD
+		name for name, score in filtered_ranked if score >= LIKELY_THRESHOLD
 	]
 	possible_findings = [
 		name
-		for name, score in ranked
-		if MODERATE_CONFIDENCE_THRESHOLD <= score < HIGH_CONFIDENCE_THRESHOLD
+		for name, score in filtered_ranked
+		if MINIMAL_SIGNAL_THRESHOLD <= score < POSSIBLE_THRESHOLD
 	]
 
-	pneumonia_score = round(float(scores.get("Pneumonia", 0.0)), 4)
-	pneumonia_signal = _confidence_band(pneumonia_score)
+	pneumonia_score = round(float(raw_scores.get("Pneumonia", 0.0)), 4)
+	pneumonia_confidence = (
+		_confidence_label(pneumonia_score)
+		if pneumonia_score >= NOISE_THRESHOLD
+		else "Below detection threshold"
+	)
 
 	return {
+		"overall_assessment": _overall_assessment(max_score),
 		"top_findings": top_findings,
 		"likely_findings": likely_findings,
 		"possible_findings": possible_findings,
 		"pneumonia": {
 			"score": pneumonia_score,
-			"signal": pneumonia_signal,
+			"signal": pneumonia_confidence,
 		},
 	}
 
@@ -126,17 +167,26 @@ def predict(image_path, use_ensemble=False):
 			model_outputs.append(_run_model(extra_model, tensor))
 			used_models.append(name)
 
-	scores = {}
+	raw_scores = {}
 	for disease in REQUESTED_DISEASES:
 		available_scores = [
 			output[disease] for output in model_outputs if disease in output
 		]
 		if not available_scores:
 			raise KeyError(f"Required pathology not found in model output: {disease}")
-		scores[disease] = round(float(np.mean(available_scores)), 4)
+		raw_scores[disease] = round(float(np.mean(available_scores)), 4)
+
+	# Remove pure-noise entries (below 0.25) from the scores dict entirely
+	scores = {
+		disease: score
+		for disease, score in raw_scores.items()
+		if score >= NOISE_THRESHOLD
+	}
+	overall_assessment = _overall_assessment(max(raw_scores.values()))
 
 	return {
 		"scores": scores,
+		"overall_assessment": overall_assessment,
 		"limitations": {
 			"Tuberculosis": TB_LIMITATION_MESSAGE,
 		},
@@ -145,5 +195,5 @@ def predict(image_path, use_ensemble=False):
 			"ensemble_enabled": bool(use_ensemble),
 			"models_used": used_models,
 		},
-		"interpretation": _build_interpretation(scores),
+		"interpretation": _build_interpretation(raw_scores),
 	}

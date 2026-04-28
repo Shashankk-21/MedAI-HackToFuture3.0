@@ -1,14 +1,15 @@
 from contextlib import asynccontextmanager
 import os
 import shutil
-import uuid
 import traceback
+import uuid
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from chatbot import chat, explain_diagnosis
+
+from chatbot import chat, explain_diagnosis, generate_chat_init
 from xray_model import predict
 
 
@@ -37,6 +38,11 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
+
+
 class ChatRequest(BaseModel):
     message: str
     context: str = ""
@@ -44,6 +50,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
 
 
 @app.middleware("http")
@@ -73,8 +84,28 @@ async def log_chat_requests(request: Request, call_next):
     return response
 
 
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+    """
+    Accept a chest X-ray image, run inference, generate an AI explanation,
+    and return chat initialisation data (greeting + quick-reply pills) so the
+    frontend can populate the first chat bubble immediately.
+
+    Response shape:
+        {
+            "predictions":  { ... },          # raw model output
+            "explanation":  "...",             # AI/rule-based markdown explanation
+            "chat_init": {
+                "greeting":      "...",        # first chat bubble text
+                "quick_replies": ["...", ...]  # clickable pill buttons (3 items)
+            }
+        }
+    """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image")
 
@@ -87,16 +118,32 @@ async def analyze(file: UploadFile = File(...)):
         with open(filepath, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Failed to save uploaded image") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to save uploaded image"
+        ) from exc
     finally:
         await file.close()
 
     try:
         predictions = predict(filepath)
+        overall_assessment: str = predictions.get("overall_assessment", "")
+
+        # Both calls are intentionally independent so one failure does not
+        # block the other.
         explanation = explain_diagnosis(predictions)
-        return {"predictions": predictions, "explanation": explanation}
+        chat_init = generate_chat_init(predictions, overall_assessment)
+
+        return {
+            "predictions": predictions,
+            "explanation": explanation,
+            "chat_init": chat_init,
+            # Shape: { "greeting": "...", "quick_replies": ["...", "...", "..."] }
+        }
+
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Failed to analyze image") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to analyze image"
+        ) from exc
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
@@ -107,7 +154,9 @@ async def chat_endpoint(request: Request):
     try:
         payload = getattr(request.state, "chat_payload", None) or {}
         if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+            raise HTTPException(
+                status_code=400, detail="Request body must be a JSON object"
+            )
 
         raw_message = payload.get("message")
         raw_context = payload.get("context", payload.get("explanation", ""))
@@ -131,4 +180,6 @@ async def chat_endpoint(request: Request):
     except Exception as exc:
         print(f"chat_endpoint_error={exc}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to process chat request") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to process chat request"
+        ) from exc
