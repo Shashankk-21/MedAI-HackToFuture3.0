@@ -1,4 +1,5 @@
 import json
+import ast
 import os
 import re
 import traceback
@@ -591,13 +592,8 @@ def generate_chat_init(predictions: dict, overall_assessment: str) -> dict:
 
     if text:
         try:
-            # Strip any accidental markdown fences the model may add
-            raw = text.strip()
-            if raw.startswith("```"):
-                parts = raw.split("```")
-                raw = parts[1].lstrip("json").strip() if len(parts) > 1 else raw
-
-            data = json.loads(raw)
+            raw = _extract_json_object(text)
+            data = _parse_jsonish_object(raw)
             greeting: str = data.get("greeting", "").strip()
             quick_replies: list = data.get("quick_replies", [])
 
@@ -614,6 +610,43 @@ def generate_chat_init(predictions: dict, overall_assessment: str) -> dict:
 
     print("[generate_chat_init] Gemini unavailable or parse failed — using static fallback")
     return _fallback_chat_init(predictions, overall_assessment)
+
+
+def _extract_json_object(text: str) -> str:
+    """
+    Extract the first JSON-like object from model output.
+
+    Handles common LLM formatting issues such as markdown fences and extra
+    prose before or after the object.
+    """
+    raw = text.strip()
+
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+    if fence_match:
+        raw = fence_match.group(1).strip()
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        raw = raw[start : end + 1].strip()
+
+    return raw
+
+
+def _parse_jsonish_object(raw: str) -> dict:
+    """
+    Parse a model response that is intended to be JSON but may contain
+    single quotes, trailing commas, or code-fence artifacts.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = ast.literal_eval(raw)
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected object at top level, got {type(parsed).__name__}")
+
+    return parsed
 
 
 def _fallback_chat_init(predictions: dict, overall_assessment: str) -> dict:
