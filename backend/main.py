@@ -33,7 +33,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://your-app-name.vercel.app",
+        "https://med-ai-hack-to-future3-0-nu6b755zs-shashanks-projects-7e332267.vercel.app/",
     ],
     allow_credentials=True,
     allow_methods=["*"],

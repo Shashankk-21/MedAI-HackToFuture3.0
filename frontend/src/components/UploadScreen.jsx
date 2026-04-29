@@ -3,6 +3,8 @@ import axios from 'axios'
 import { Activity, Loader2, UploadCloud, X, FileImage, AlertTriangle, Heart } from 'lucide-react'
 import { gsap } from 'gsap'
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 function UploadScreen({ onAnalysisComplete }) {
   const fileInputRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -65,6 +67,24 @@ function UploadScreen({ onAnalysisComplete }) {
     }
   }
 
+  // Load a sample image from the public /samples/ folder and inject it
+  // into the upload flow as if the user selected it.
+  const loadSample = async (url, filename) => {
+    try {
+      setIsLoading(true)
+      setError('')
+      const res = await fetch(url)
+      if (!res.ok) throw new Error('Failed to fetch sample')
+      const blob = await res.blob()
+      const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
+      handleFileSelected(file)
+    } catch (err) {
+      setError('Could not load sample image.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   // --- BACKEND LOGIC: FASTAPI CONNECTION ---
   const handleAnalyze = async () => {
     setIsLoading(true)
@@ -84,7 +104,7 @@ function UploadScreen({ onAnalysisComplete }) {
     formData.append('file', selectedFile)
 
     try {
-      const response = await axios.post('http://localhost:8000/analyze', formData, {
+      const response = await axios.post(`${API_URL}/analyze`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
 
@@ -234,6 +254,34 @@ function UploadScreen({ onAnalysisComplete }) {
               </div>
             </div>
           )}
+
+          {/* --- SAMPLE DOWNLOADS: Light, subtle pills below the upload zone --- */}
+          <div className="mt-6 flex flex-col items-center gap-3">
+            <p className="text-sm text-slate-500 dark:text-zinc-400 mb-2 font-medium">Don't have an X-ray? Try our samples.</p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => loadSample('/samples/Pneumonia_positive.jpeg', 'Pneumonia_positive.jpeg')}
+                className="px-3 py-1.5 rounded-full border border-slate-300 dark:border-white/10 text-xs font-semibold text-slate-700 dark:text-zinc-300 bg-transparent hover:bg-indigo-50/30 transition"
+              >
+                Pneumonia Sample
+              </button>
+              <button
+                type="button"
+                onClick={() => loadSample('/samples/Normal.jpeg', 'Normal.jpeg')}
+                className="px-3 py-1.5 rounded-full border border-slate-300 dark:border-white/10 text-xs font-semibold text-slate-700 dark:text-zinc-300 bg-transparent hover:bg-indigo-50/30 transition"
+              >
+                Normal Sample
+              </button>
+              <button
+                type="button"
+                onClick={() => loadSample('/samples/Covid_Positive.jpeg', 'Covid_Positive.jpeg')}
+                className="px-3 py-1.5 rounded-full border border-slate-300 dark:border-white/10 text-xs font-semibold text-slate-700 dark:text-zinc-300 bg-transparent hover:bg-indigo-50/30 transition"
+              >
+                COVID Sample
+              </button>
+            </div>
+          </div>
 
           <button
             type="button"
