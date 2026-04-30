@@ -3,6 +3,8 @@ import axios from 'axios'
 import { ArrowLeft, Send, Sparkles, Bot, Clock } from 'lucide-react'
 import { gsap } from 'gsap'
 
+const API_URL = "https://medai-hacktofuture30-production.up.railway.app";
+
 const BotAvatar = ({ isThinking }) => (
   <div className="relative inline-flex items-center justify-center w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 via-cyan-500 to-emerald-400 p-[2px] shadow-lg">
     <div className="w-full h-full rounded-full bg-white dark:bg-slate-900 flex items-center justify-center overflow-hidden">
@@ -50,13 +52,10 @@ function ChatScreen({ explanation, onBack }) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     
-    // Animate newest messages with a pop effect
+    // Animate newest messages
     const bubbles = document.querySelectorAll('.message-bubble:not(.animated)')
     if (bubbles.length > 0) {
-      gsap.fromTo(bubbles, 
-        { opacity: 0, y: 20, scale: 0.4 }, 
-        { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.1, ease: 'back.out(1.7)' }
-      )
+      gsap.fromTo(bubbles, { opacity: 0, y: 10, scale: 0.95 }, { opacity: 1, y: 0, scale: 1, duration: 0.3, stagger: 0.1, ease: 'back.out(1.2)' })
       bubbles.forEach(b => b.classList.add('animated'))
     }
   }, [messages, isLoading])
@@ -82,7 +81,7 @@ function ChatScreen({ explanation, onBack }) {
         context: explanation, 
       }
 
-      const response = await axios.post('http://localhost:8000/chat', payload, {
+      const response = await axios.post(`${API_URL}/chat`, payload, {
         headers: { 'Content-Type': 'application/json' },
       })
 
