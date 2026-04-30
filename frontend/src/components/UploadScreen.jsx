@@ -3,7 +3,7 @@ import axios from 'axios'
 import { Activity, Loader2, UploadCloud, X, FileImage, AlertTriangle, Heart } from 'lucide-react'
 import { gsap } from 'gsap'
 
-const API_URL = import.meta.env.VITE_API_URL
+const API_URL = "medai-hacktofuture30-production.up.railway.app"
 
 
 function UploadScreen({ onAnalysisComplete }) {
