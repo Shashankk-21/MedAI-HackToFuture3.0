@@ -104,6 +104,11 @@ function UploadScreen({ onAnalysisComplete }) {
     const formData = new FormData()
     formData.append('file', selectedFile)
 
+    console.log('DEBUG: Vite Env Variables', {
+      'import.meta.env.VITE_API_URL': import.meta.env.VITE_API_URL,
+      'API_URL': API_URL
+    })
+
     try {
       const response = await axios.post(`${API_URL}/analyze`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
