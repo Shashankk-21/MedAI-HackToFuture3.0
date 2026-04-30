@@ -3,7 +3,8 @@ import axios from 'axios'
 import { Activity, Loader2, UploadCloud, X, FileImage, AlertTriangle, Heart } from 'lucide-react'
 import { gsap } from 'gsap'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL
+
 
 function UploadScreen({ onAnalysisComplete }) {
   const fileInputRef = useRef(null)
