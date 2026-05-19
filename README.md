@@ -12,7 +12,7 @@ Built for **Hack to Future 3.0** | KLS Gogte Institute of Technology, Belagavi
 | Resource | Link |
 |---|---|
 | 📹 Demo Video | https://youtu.be/6cxGrB3Zkac |
-| 🚀 Deployed Prototype | Not deployed due to hackathon time constraints — please run locally using the instructions below |
+| 🚀 Deployed Prototype | https://med-ai-hack-to-future3-0.vercel.app/ |
 
 ---
 
